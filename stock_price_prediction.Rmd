@@ -1,0 +1,151 @@
+---
+title: "Stock price prediction with time series techniques"
+author: "Yevheniia Mitriakhina"
+output:
+  html_document:
+    df_print: paged
+---
+# Getting the data
+```{r}
+
+library(BatchGetSymbols)
+
+first.date <- '2008-01-02'
+last.date <- Sys.Date()-30
+freq.data <- 'daily'
+# set tickers
+tickers <- "HSY"
+
+l.out <- BatchGetSymbols(tickers = tickers, 
+                         first.date = first.date,
+                         last.date = last.date, 
+                         freq.data = freq.data,
+                         cache.folder = file.path(tempdir(), 
+                                                  'BGS_Cache'),
+                         thresh.bad.data = 0.99)
+test.data <- BatchGetSymbols(tickers = tickers, 
+                         first.date = last.date,
+                         last.date = Sys.Date(), 
+                         freq.data = freq.data,
+                         cache.folder = file.path(tempdir(), 
+                                                  'BGS_Cache'),
+                         thresh.bad.data = 0.99)
+```
+```{r}
+data.prices <- ts(l.out$df.tickers$price.close, start=c(2008, 1,2), frequency = 251)
+test.set <- ts(test.data$df.tickers$price.close, start=c(2019, 4, 4), frequency = 251)
+```
+# Preparing the data
+we need to understand the three components of a time series data:
+Trend,Seasonal, Cyclic.
+Smoothing with moving average
+```{r}
+#Simple moving average
+library(TTR)
+smoothed <- SMA(data.prices, n=75)
+plot(ts(smoothed, start=c(2008, 1,2), frequency = 251), col='red', main="Simple moving average on prices", ylab='Price')
+lines(data.prices, col='lightgrey')
+legend(2008, 100, legend=c("Price", "Moving average"),
+       col=c("grey", "red"), lty=1:1, cex=0.8)
+```
+
+# Stationarity test
+Augmented Dickey-Fuller test (ADF)
+
+ADF tests the null hypothesis that a unit root is present in time series sample. ADF statistic is a negative number and more negative it is the stronger the rejection of the hypothesis that there is a unit root.
+Null Hypotehsis (H0): If accepted, it suggests the time series has a unit root, meaning it is non-stationary. It has some time dependent structure.
+```{r}
+library(tseries)
+tseries::adf.test(data.prices)
+```
+we cannot reject the hypothesis that data is non-stationary on 95% confidence level.
+```{r}
+log.prices <- log(data.prices)
+plot(log.prices, main='Prices', ylab='log(price)', col='grey')
+```
+
+```{r}
+decomposed <- stl(log(data.prices), s.window="periodic")
+plot(decomposed, col = '#708090', main = "Decomposition of additive time series") 
+```
+We have increasing trend which is almost linear we might fit the line to the data and then model the residuals from that line.
+```{r}
+library(forecast)
+x <- seq(1, length(log.prices), by=1)
+plot(cbind(x, as.vector(log.prices)), type='l', col='grey', main='Fitting the linear trend', ylab='log(Price)', xlab='Time')
+fit <- tslm(log.prices ~ trend)
+intercept <- data.frame(fit$coefficients)[1,]
+slope <- data.frame(fit$coefficients)[2,]
+y <- intercept+slope*x
+lines(cbind(x, y), col='red')
+legend(2008, 4, legend=c("Price", "Trend"),
+       col=c("grey", "red"), lty=1:1, cex=0.8)
+```
+```{r}
+detrended.prices <- log.prices - y
+plot(detrended.prices, ylab='Price', main='Detrended prices', col='grey')
+abline(h = mean(detrended.prices), lty = 2, col='red')
+legend(2008, 0.3, legend=c("Detrended log(Price)", "Mean"),
+       col=c("grey", "red"), lty=1:1, cex=0.8)
+```
+Even visually the data is still not stationary. Again check for stationarity:
+```{r}
+# Time series has non-zero mean
+library(tseries)
+tseries::adf.test(detrended.prices) # Still non-stationary
+```
+# Difference detrended data
+```{r}
+differenced.prices <- diff(detrended.prices) 
+plot(differenced.prices, main='Differenced prices (d=1)', ylab='log(Price)', col='grey')
+abline(h = mean(differenced.prices), lty = 2, col='red')
+legend(2008, 0.15, legend=c("Differenced detrended log(Price)", "Mean"),
+       col=c("grey", "red"), lty=1:1, cex=0.8)
+
+```
+```{r}
+tseries::adf.test(differenced.prices)
+```
+```{r}
+# Examining 
+Acf(differenced.prices, main='ACF for Differenced Series', lag.max=250)
+Pacf(differenced.prices, main='PACF for Differenced Series', lag.max = 250)
+```
+
+```{r}
+# Automatically determines coefficients
+ auto.arima(differenced.prices)
+```
+
+```{r}
+# Choosing the best fit
+f1 <- arima(differenced.prices, c(2,1,0))
+f2 <- arima(differenced.prices, c(2,1,2))
+f3 <- arima(differenced.prices, c(2,1,1))
+f4 <- arima(differenced.prices, c(0,0,2))
+# The best fit
+fit <- arima(differenced.prices, c(2,0, 0))
+fit
+```
+
+```{r}
+fcast <- forecast(fit, h=30)
+fcast
+```
+```{r}
+# Perform tha same transformations on test set to compare it with prediction later
+test.log <- log(test.set)
+test.detrended <- test.log - intercept+slope*seq((length(log.prices) + 1), (length(log.prices) + length(test.log)), by=1)
+test.differenced <- diff(test.detrended)
+
+```
+
+```{r}
+plot(as.numeric(test.differenced), col = 'grey', type = 'l', main = 'Predicted and real prices', xlab='Time', ylab = 'Price')
+lines(as.numeric(fcast$x[length(fcast$x) - 30 : length(fcast$x)]), col='red')
+legend(1, 0.04, legend=c("Differenced detrended log(price)", "Prediction"),
+       col=c("grey", "red"), lty=1:1, cex=0.8)
+
+```
+
+
